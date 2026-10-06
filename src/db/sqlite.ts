@@ -14,6 +14,24 @@ interface CatalogVersion {
   updatedAt: string
 }
 
+export interface LocalDatabaseVersionConflict {
+  localVersion: string
+  officialVersion: string
+  localUpdatedAt: string
+}
+
+export class LocalDatabaseVersionConflictError extends Error {
+  conflict: LocalDatabaseVersionConflict
+
+  constructor(conflict: LocalDatabaseVersionConflict) {
+    super(
+      'Existe una base local con cambios pendientes de una versión anterior.',
+    )
+    this.name = 'LocalDatabaseVersionConflictError'
+    this.conflict = conflict
+  }
+}
+
 let SQL:
   | SqlJsStatic
   | null = null
@@ -75,6 +93,44 @@ async function downloadOfficialDatabase() {
   return new Uint8Array(
     await response.arrayBuffer(),
   )
+}
+
+export async function getLocalDatabaseVersionConflict():
+  Promise<LocalDatabaseVersionConflict | null> {
+  const [official, local] =
+    await Promise.all([
+      getOfficialVersion(),
+      getLocalDatabase(),
+    ])
+
+  if (
+    !local ||
+    !local.dirty ||
+    local.catalogVersion === official.version
+  ) {
+    return null
+  }
+
+  return {
+    localVersion: local.catalogVersion,
+    officialVersion: official.version,
+    localUpdatedAt: local.updatedAt,
+  }
+}
+
+export async function getLocalDatabaseBackup() {
+  const local = await getLocalDatabase()
+
+  if (!local) {
+    throw new Error(
+      'No existe una base local para respaldar.',
+    )
+  }
+
+  return {
+    data: new Uint8Array(local.data),
+    catalogVersion: local.catalogVersion,
+  }
 }
 
 function validateDatabase(
@@ -148,6 +204,21 @@ export async function initDatabase() {
 
   const local =
     await getLocalDatabase()
+
+  if (
+    local?.dirty &&
+    local.catalogVersion !==
+      official.version
+  ) {
+    throw new LocalDatabaseVersionConflictError({
+      localVersion:
+        local.catalogVersion,
+      officialVersion:
+        official.version,
+      localUpdatedAt:
+        local.updatedAt,
+    })
+  }
 
   let data: Uint8Array
 
@@ -273,13 +344,17 @@ export async function hasUnsavedChanges() {
 }
 
 export async function getWorkingVersion() {
-  const local =
-    await getLocalDatabase()
+  const [local, official] =
+    await Promise.all([
+      getLocalDatabase(),
+      getOfficialVersion(),
+    ])
 
-  return (
-    local?.catalogVersion ??
-    currentVersion
-  )
+  if (!local || !local.dirty) {
+    return official.version
+  }
+
+  return local.catalogVersion
 }
 
 /*
@@ -342,6 +417,15 @@ export async function importDatabase(
   exactamente al SQLite publicado.
 */
 export async function resetToOfficialDatabase() {
+  database?.close()
+  database = null
+
+  await clearLocalDatabase()
+
+  return initDatabase()
+}
+
+export async function discardLocalDatabaseAndUseOfficial() {
   database?.close()
   database = null
 

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 
 import AdminGate from './components/AdminGate'
+import DatabaseVersionGate from './components/DatabaseVersionGate'
 import AdminPage from './pages/AdminPage'
 import CatalogPage from './pages/CatalogPage'
 
@@ -20,6 +21,7 @@ function App() {
     useState<Mode>('catalog')
 
   return (
+    <DatabaseVersionGate>
     <div className="main-shell">
       <nav className="main-tabs">
         <button
@@ -29,6 +31,7 @@ function App() {
               ? 'active'
               : ''
           }
+          aria-pressed={mode === 'catalog'}
           onClick={() =>
             setMode('catalog')
           }
@@ -47,6 +50,7 @@ function App() {
               ? 'active'
               : ''
           }
+          aria-pressed={mode === 'admin'}
           onClick={() =>
             setMode('admin')
           }
@@ -65,6 +69,7 @@ function App() {
         </AdminGate>
       )}
     </div>
+    </DatabaseVersionGate>
   )
 }
 

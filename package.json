@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "db:create-empty": "node scripts/create-empty-db.mjs",
+    "db:test-empty": "node scripts/test-empty-db.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "server": "tsx watch server/server.ts"

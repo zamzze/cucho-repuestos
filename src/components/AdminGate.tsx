@@ -106,7 +106,7 @@ export default function AdminGate({
             Esta sección permite modificar
             familias, modelos,
             compatibilidades y estados de
-            los repuestos.
+            los componentes.
           </p>
 
           <form
@@ -130,7 +130,7 @@ export default function AdminGate({
             </label>
 
             {error && (
-              <div className="gate-error">
+              <div className="gate-error" role="alert">
                 {error}
               </div>
             )}

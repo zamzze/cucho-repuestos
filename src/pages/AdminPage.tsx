@@ -1,2604 +1,1605 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
-  type FormEvent,
+  type ReactNode,
 } from 'react'
-
 import {
   AlertTriangle,
   ArrowLeft,
-  Check,
+  ArrowRight,
   CheckCircle2,
-  ChevronRight,
   ClipboardCheck,
   Copy,
   Database,
   Download,
+  LayoutDashboard,
   Layers3,
+  PackagePlus,
   PackageSearch,
   Plus,
   RefreshCw,
   RotateCcw,
+  Save,
   Search,
   Trash2,
+  Undo2,
   Upload,
   Wrench,
   X,
 } from 'lucide-react'
-
 import {
   addCompatibility,
+  archiveFamily,
+  archiveModel,
+  archivePart,
   createFamily,
   createModel,
+  createPart,
   deleteCompatibility,
   getFamilies,
+  getCatalogStats,
+  getFamilyDependencyCounts,
+  getModelDependencyCounts,
   getModels,
   getPart,
   getPartCompatibilities,
+  getPartDependencyCounts,
   getPartStats,
-  getPartSuggestions,
   getParts,
+  restoreFamily,
+  restoreModel,
+  restorePart,
+  updateFamily,
+  updateModel,
+  updatePart,
   updatePartVerification,
+  type ApiCompatibility,
+  type ApiCatalogStats,
+  type ApiFamily,
+  type ApiModel,
+  type ApiPart,
+  type ApiPartStats,
 } from '../db/repository'
-
-import type {
-  ApiCompatibility,
-  ApiFamily,
-  ApiModel,
-  ApiPart,
-  ApiPartStats,
-  ApiSuggestion,
-} from '../db/repository'
-
 import {
+  getWorkingVersion,
+  hasUnsavedChanges,
   importDatabase,
   resetToOfficialDatabase,
 } from '../db/sqlite'
+import { downloadDatabase } from '../utils/downloadDatabase'
 
-import {
-  downloadDatabase,
-} from '../utils/downloadDatabase'
+type Section = 'summary' | 'parts' | 'families' | 'models'
+type Filter = 'all' | 'pending' | 'review' | 'verified'
+type PartInput = {
+  name: string
+  sapCode: string
+  oemCode: string
+  notes: string
+}
+type ModelInput = {
+  familyId: number
+  brand: string
+  name: string
+  variant: string
+}
 
-type Section =
-  | 'parts'
-  | 'families'
-  | 'models'
+const emptyPart: PartInput = {
+  name: '',
+  sapCode: '',
+  oemCode: '',
+  notes: '',
+}
+const emptySession = {
+  verified: 0,
+  compatibilitiesAdded: 0,
+  compatibilitiesRemoved: 0,
+  partsCreated: 0,
+}
+const messageOf = (value: unknown) =>
+  value instanceof Error
+    ? value.message
+    : 'Ocurrió un error inesperado.'
 
-type VerificationFilter =
-  | 'all'
-  | 'pending'
-  | 'review'
-  | 'verified'
+export default function AdminPage() {
+  const [section, setSection] = useState<Section>('summary')
+  const [parts, setParts] = useState<ApiPart[]>([])
+  const [queue, setQueue] = useState<ApiPart[]>([])
+  const [stats, setStats] = useState<ApiPartStats | null>(null)
+  const [catalogStats, setCatalogStats] =
+    useState<ApiCatalogStats | null>(null)
+  const [families, setFamilies] = useState<ApiFamily[]>([])
+  const [models, setModels] = useState<ApiModel[]>([])
+  const [selected, setSelected] = useState<ApiPart | null>(null)
+  const [compatibilities, setCompatibilities] =
+    useState<ApiCompatibility[]>([])
+  const [filter, setFilter] = useState<Filter>('all')
+  const [search, setSearch] = useState('')
+  const [showArchived, setShowArchived] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
+  const [dirty, setDirty] = useState(false)
+  const [version, setVersion] = useState('unknown')
+  const [session, setSession] = useState(emptySession)
+  const [dialog, setDialog] = useState<
+    'new-part' | 'compatibility' | null
+  >(null)
+  const [editingFamily, setEditingFamily] =
+    useState<ApiFamily | null>(null)
+  const [editingModel, setEditingModel] =
+    useState<ApiModel | null>(null)
+  const [partDraft, setPartDraft] =
+    useState<PartInput>(emptyPart)
+  const fileRef = useRef<HTMLInputElement>(null)
 
-function AdminPage() {
-  const [section, setSection] =
-    useState<Section>('parts')
-
-  const [parts, setParts] =
-    useState<ApiPart[]>([])
-
-  const [stats, setStats] =
-    useState<ApiPartStats | null>(null)
-
-  const [families, setFamilies] =
-    useState<ApiFamily[]>([])
-
-  const [models, setModels] =
-    useState<ApiModel[]>([])
-
-  const [selectedPart, setSelectedPart] =
-    useState<ApiPart | null>(null)
-
-  const [
-    compatibilities,
-    setCompatibilities,
-  ] = useState<ApiCompatibility[]>([])
-
-  const [suggestions, setSuggestions] =
-    useState<ApiSuggestion[]>([])
-
-  const [search, setSearch] =
-    useState('')
-
-  const [filter, setFilter] =
-    useState<VerificationFilter>('all')
-
-  const [loading, setLoading] =
-    useState(true)
-
-  const [
-    detailLoading,
-    setDetailLoading,
-  ] = useState(false)
-
-  const [error, setError] =
-    useState<string | null>(null)
-
-  const [copiedSap, setCopiedSap] =
-    useState(false)
-
-  const [
-    showAddCompatibility,
-    setShowAddCompatibility,
-  ] = useState(false)
-
-  const [
-    selectedFamilyId,
-    setSelectedFamilyId,
-  ] = useState<number | null>(null)
-
-  const [
-    selectedModelId,
-    setSelectedModelId,
-  ] = useState<number | null>(null)
-
-  const [
-    newFamilyCode,
-    setNewFamilyCode,
-  ] = useState('')
-
-  const [
-    newFamilyName,
-    setNewFamilyName,
-  ] = useState('')
-
-  const [
-    modelFamilyId,
-    setModelFamilyId,
-  ] = useState<number | null>(null)
-
-  const [
-    newModelBrand,
-    setNewModelBrand,
-  ] = useState('')
-
-  const [
-    newModelName,
-    setNewModelName,
-  ] = useState('')
-
-  const [
-    newModelVariant,
-    setNewModelVariant,
-  ] = useState('')
-
-  const [saving, setSaving] =
-    useState(false)
-
-  const databaseInputRef =
-    useRef<HTMLInputElement>(null)
+  const refresh = useCallback(async () => {
+    const [partData, queueData, statData, catalogStatData, familyData, modelData, isDirty, catalogVersion] =
+      await Promise.all([
+        getParts({
+          q: search.trim() || undefined,
+          verification: filter === 'all' ? undefined : filter,
+          includeInactive: showArchived,
+        }),
+        getParts(),
+        getPartStats(),
+        getCatalogStats(),
+        getFamilies({ includeInactive: true }),
+        getModels(undefined, { includeInactive: true }),
+        hasUnsavedChanges(),
+        getWorkingVersion(),
+      ])
+    setParts(partData)
+    setQueue(queueData)
+    setStats(statData)
+    setCatalogStats(catalogStatData)
+    setFamilies(familyData)
+    setModels(modelData)
+    setDirty(isDirty)
+    setVersion(catalogVersion)
+  }, [filter, search, showArchived])
 
   useEffect(() => {
-    void loadInitialData()
+    const timer = window.setTimeout(() => {
+      setLoading(true)
+      void refresh()
+        .catch((caught) => setError(messageOf(caught)))
+        .finally(() => setLoading(false))
+    }, 180)
+    return () => window.clearTimeout(timer)
+  }, [refresh])
+
+  useEffect(() => {
+    if (!toast) return
+    const timer = window.setTimeout(() => setToast(null), 2600)
+    return () => window.clearTimeout(timer)
+  }, [toast])
+
+  const openPart = useCallback(async (id: number) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const [part, relationData] = await Promise.all([
+        getPart(id),
+        getPartCompatibilities(id, { includeInactive: true }),
+      ])
+      if (!part) throw new Error('Componente no encontrado.')
+      setSelected(part)
+      setCompatibilities(relationData)
+      setPartDraft({
+        name: part.name,
+        sapCode: part.sap_code ?? '',
+        oemCode: part.oem_code ?? '',
+        notes: part.notes ?? '',
+      })
+    } catch (caught) {
+      setError(messageOf(caught))
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
-  useEffect(() => {
-    if (section !== 'parts') {
-      return
-    }
-
-    const timer =
-      window.setTimeout(() => {
-        void loadParts()
-      }, 220)
-
-    return () => {
-      window.clearTimeout(timer)
-    }
-  }, [
-    search,
-    filter,
-    section,
-  ])
-
-  async function loadInitialData() {
+  async function mutate(action: () => Promise<unknown>, success: string) {
+    setSaving(true)
+    setError(null)
     try {
-      setLoading(true)
-      setError(null)
-
-      const [
-        statsData,
-        familiesData,
-        modelsData,
-      ] = await Promise.all([
-        getPartStats(),
-        getFamilies(),
-        getModels(),
-      ])
-
-      setStats(statsData)
-      setFamilies(familiesData)
-      setModels(modelsData)
-
-      await loadParts()
-    } catch (err) {
-      handleError(err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function loadParts() {
-    try {
-      const data =
-        await getParts({
-          q:
-            search.trim() ||
-            undefined,
-
-          verification:
-            filter === 'all'
-              ? undefined
-              : filter,
-        })
-
-      setParts(data)
-    } catch (err) {
-      handleError(err)
-    }
-  }
-
-  async function refreshStats() {
-    try {
-      const data =
-        await getPartStats()
-
-      setStats(data)
-    } catch (err) {
-      handleError(err)
-    }
-  }
-
-  async function openPart(
-    partId: number,
-  ) {
-    try {
-      setDetailLoading(true)
-      setError(null)
-
-      const [
-        part,
-        compatibilityData,
-        suggestionData,
-      ] = await Promise.all([
-        getPart(partId),
-
-        getPartCompatibilities(
-          partId,
-        ),
-
-        getPartSuggestions(
-          partId,
-        ),
-      ])
-
-      if (!part) {
-        throw new Error(
-          'Repuesto no encontrado.',
-        )
-      }
-
-      setSelectedPart(part)
-
-      setCompatibilities(
-        compatibilityData,
-      )
-
-      setSuggestions(
-        suggestionData,
-      )
-
-      window.scrollTo({
-        top: 0,
-        behavior: 'smooth',
-      })
-    } catch (err) {
-      handleError(err)
-    } finally {
-      setDetailLoading(false)
-    }
-  }
-
-  async function refreshPartDetail() {
-    if (!selectedPart) {
-      return
-    }
-
-    await openPart(
-      selectedPart.id,
-    )
-  }
-
-  function closePart() {
-    setSelectedPart(null)
-
-    setCompatibilities([])
-    setSuggestions([])
-
-    setShowAddCompatibility(
-      false,
-    )
-
-    setSelectedFamilyId(null)
-    setSelectedModelId(null)
-
-    void loadParts()
-    void refreshStats()
-  }
-
-  async function copySap(
-    code: string,
-  ) {
-    try {
-      await navigator.clipboard.writeText(
-        code,
-      )
-
-      setCopiedSap(true)
-
-      window.setTimeout(() => {
-        setCopiedSap(false)
-      }, 1500)
-    } catch {
-      setError(
-        'No se pudo copiar el código SAP.',
-      )
-    }
-  }
-
-  async function handleAddCompatibility(
-    modelId?: number | null,
-  ) {
-    if (!selectedPart) {
-      return
-    }
-
-    const targetModelId =
-      modelId ??
-      selectedModelId
-
-    if (!targetModelId) {
-      setError(
-        'Selecciona un modelo.',
-      )
-
-      return
-    }
-
-    try {
-      setSaving(true)
-      setError(null)
-
-      await addCompatibility(
-        selectedPart.id,
-        targetModelId,
-      )
-
-      setShowAddCompatibility(
-        false,
-      )
-
-      setSelectedFamilyId(null)
-      setSelectedModelId(null)
-
-      await refreshPartDetail()
-    } catch (err) {
-      handleError(err)
+      await action()
+      await refresh()
+      setToast(success)
+      return true
+    } catch (caught) {
+      setError(messageOf(caught))
+      return false
     } finally {
       setSaving(false)
     }
   }
 
-  async function handleDeleteCompatibility(
-    modelId: number,
-  ) {
-    if (!selectedPart) {
-      return
-    }
+  const activeFamilies = useMemo(
+    () => families.filter((item) => item.status === 'active'),
+    [families],
+  )
+  const activeModels = useMemo(
+    () => models.filter((item) =>
+      item.status === 'active' &&
+      activeFamilies.some((family) => family.id === item.family_id),
+    ),
+    [activeFamilies, models],
+  )
 
-    const confirmed =
-      window.confirm(
-        '¿Quitar esta compatibilidad del repuesto?',
-      )
-
-    if (!confirmed) {
-      return
-    }
-
-    try {
-      setSaving(true)
-      setError(null)
-
-      await deleteCompatibility(
-        selectedPart.id,
-        modelId,
-      )
-
-      await refreshPartDetail()
-    } catch (err) {
-      handleError(err)
-    } finally {
-      setSaving(false)
-    }
+  async function refreshDetail() {
+    if (selected) await openPart(selected.id)
   }
 
-  async function setVerificationStatus(
-    status:
-      | 'pending'
-      | 'review'
-      | 'verified',
-  ) {
-    if (!selectedPart) {
-      return
-    }
-
+  async function handleImport(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file || !window.confirm(
+      '¿Cargar esta base SQLite? La copia local actual será reemplazada.',
+    )) return
+    setLoading(true)
     try {
-      setSaving(true)
-      setError(null)
-
-      const updated =
-        await updatePartVerification(
-          selectedPart.id,
-          status,
-        )
-
-      setSelectedPart(updated)
-
-      await refreshStats()
-      await loadParts()
-    } catch (err) {
-      handleError(err)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function handleCreateFamily(
-    event: FormEvent<HTMLFormElement>,
-  ) {
-    event.preventDefault()
-
-    if (
-      !newFamilyCode.trim() ||
-      !newFamilyName.trim()
-    ) {
-      setError(
-        'Completa código y nombre de la familia.',
-      )
-
-      return
-    }
-
-    try {
-      setSaving(true)
-      setError(null)
-
-      await createFamily(
-        newFamilyCode,
-        newFamilyName,
-      )
-
-      setNewFamilyCode('')
-      setNewFamilyName('')
-
-      const data =
-        await getFamilies()
-
-      setFamilies(data)
-    } catch (err) {
-      handleError(err)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function handleCreateModel(
-    event: FormEvent<HTMLFormElement>,
-  ) {
-    event.preventDefault()
-
-    if (
-      !modelFamilyId ||
-      !newModelBrand.trim() ||
-      !newModelName.trim()
-    ) {
-      setError(
-        'Completa familia, marca y modelo.',
-      )
-
-      return
-    }
-
-    try {
-      setSaving(true)
-      setError(null)
-
-      await createModel({
-        familyId:
-          modelFamilyId,
-
-        brand:
-          newModelBrand,
-
-        name:
-          newModelName,
-
-        variant:
-          newModelVariant ||
-          undefined,
-      })
-
-      setNewModelBrand('')
-      setNewModelName('')
-      setNewModelVariant('')
-
-      const [
-        modelsData,
-        familiesData,
-      ] = await Promise.all([
-        getModels(),
-        getFamilies(),
-      ])
-
-      setModels(modelsData)
-      setFamilies(
-        familiesData,
-      )
-    } catch (err) {
-      handleError(err)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function handleImportDatabase(
-    event:
-      ChangeEvent<HTMLInputElement>,
-  ) {
-    const file =
-      event.target.files?.[0]
-
-    if (!file) {
-      return
-    }
-
-    const confirmed =
-      window.confirm(
-        `¿Cargar "${file.name}" como base de trabajo?\n\nLa copia local actual será reemplazada.`,
-      )
-
-    if (!confirmed) {
-      event.target.value = ''
-      return
-    }
-
-    try {
-      setLoading(true)
-      setError(null)
-
-      setSelectedPart(null)
-
       await importDatabase(file)
-
-      await loadInitialData()
-
-      window.alert(
-        'Base SQLite cargada correctamente.',
-      )
-    } catch (err) {
-      handleError(err)
+      setSelected(null)
+      await refresh()
+      setToast('Base SQLite cargada')
+    } catch (caught) {
+      setError(messageOf(caught))
     } finally {
       setLoading(false)
-
-      event.target.value = ''
     }
   }
 
-  async function handleResetDatabase() {
-    const confirmed =
-      window.confirm(
-        '¿Descartar TODOS los cambios locales y volver a la base oficial publicada?\n\nEsta acción no se puede deshacer.',
-      )
-
-    if (!confirmed) {
-      return
-    }
-
+  async function handleReset() {
+    if (!window.confirm(
+      '¿Restaurar la base oficial? Se descartarán los cambios locales.',
+    )) return
+    setLoading(true)
     try {
-      setLoading(true)
-      setError(null)
-
-      setSelectedPart(null)
-
       await resetToOfficialDatabase()
-
-      await loadInitialData()
-
-      window.alert(
-        'Se restauró la base oficial publicada.',
-      )
-    } catch (err) {
-      handleError(err)
+      setSelected(null)
+      await refresh()
+      setToast('Base oficial restaurada')
+    } catch (caught) {
+      setError(messageOf(caught))
     } finally {
       setLoading(false)
     }
   }
 
-  function handleError(
-    err: unknown,
-  ) {
-    if (
-      err instanceof Error
+  if (selected) {
+    const queueIndex = queue.findIndex((item) => item.id === selected.id)
+    const previous = queueIndex > 0 ? queue[queueIndex - 1] : null
+    const next = queueIndex >= 0 ? queue[queueIndex + 1] ?? null : null
+
+    async function setVerification(
+      status: 'pending' | 'review' | 'verified',
     ) {
-      setError(err.message)
-      return
+      const wasVerified = selected!.verification_status === 'verified'
+      const ok = await mutate(
+        () => updatePartVerification(selected!.id, status),
+        'Estado actualizado',
+      )
+      if (ok && status === 'verified' && !wasVerified) {
+        setSession((current) => ({
+          ...current,
+          verified: current.verified + 1,
+        }))
+      }
+      if (ok) await refreshDetail()
     }
 
-    setError(
-      'Ocurrió un error inesperado.',
-    )
-  }
-
-  const availableModels =
-    useMemo(() => {
-      if (!selectedFamilyId) {
-        return []
-      }
-
-      return models.filter(
-        (model) =>
-          model.family_id ===
-          selectedFamilyId,
+    async function verifyAndNext() {
+      if (
+        compatibilities.length === 0 &&
+        !window.confirm(
+          'Este componente no tiene modelos compatibles. ¿Confirmas que debe quedar verificado sin compatibilidades?',
+        )
+      ) return
+      const wasVerified = selected!.verification_status === 'verified'
+      const ok = await mutate(
+        () => updatePartVerification(selected!.id, 'verified'),
+        'Componente verificado',
       )
-    }, [
-      models,
-      selectedFamilyId,
-    ])
-
-  const groupedSuggestions =
-    useMemo(() => {
-      const map =
-        new Map<
-          number,
-          {
-            familyId: number
-            familyCode: string
-            familyName: string
-            suggestions:
-              ApiSuggestion[]
-          }
-        >()
-
-      for (
-        const suggestion
-        of suggestions
-      ) {
-        const current =
-          map.get(
-            suggestion.family_id,
-          )
-
-        if (current) {
-          current.suggestions.push(
-            suggestion,
-          )
-        } else {
-          map.set(
-            suggestion.family_id,
-            {
-              familyId:
-                suggestion.family_id,
-
-              familyCode:
-                suggestion.family_code,
-
-              familyName:
-                suggestion.family_name,
-
-              suggestions: [
-                suggestion,
-              ],
-            },
-          )
-        }
+      if (!ok) return
+      if (!wasVerified) {
+        setSession((current) => ({
+          ...current,
+          verified: current.verified + 1,
+        }))
       }
+      const updatedQueue = await getParts()
+      setQueue(updatedQueue)
+      const following =
+        updatedQueue.find((item) =>
+          item.id !== selected!.id &&
+          item.verification_status === 'pending',
+        ) ??
+        updatedQueue.find((item) =>
+          item.id !== selected!.id &&
+          item.verification_status === 'review',
+        )
+      if (following) await openPart(following.id)
+      else {
+        setToast(
+          'Todos los componentes pendientes/revisión han sido procesados.',
+        )
+        await refreshDetail()
+      }
+    }
 
-      return [
-        ...map.values(),
-      ]
-    }, [suggestions])
-
-  if (selectedPart) {
     return (
-      <PartVerification
-        part={selectedPart}
-        compatibilities={
-          compatibilities
-        }
-        suggestionGroups={
-          groupedSuggestions
-        }
-        families={families}
-        availableModels={
-          availableModels
-        }
-        selectedFamilyId={
-          selectedFamilyId
-        }
-        selectedModelId={
-          selectedModelId
-        }
-        showAddCompatibility={
-          showAddCompatibility
-        }
-        copiedSap={copiedSap}
-        saving={saving}
-        loading={
-          detailLoading
-        }
-        error={error}
-        onBack={closePart}
-        onCopySap={copySap}
-        onOpenAdd={() =>
-          setShowAddCompatibility(
-            true,
-          )
-        }
-        onCloseAdd={() => {
-          setShowAddCompatibility(
-            false,
-          )
+      <main className="admin-app">
+        <header className="detail-header">
+          <button
+            type="button"
+            className="back-button"
+            aria-label="Volver a componentes"
+            onClick={() => setSelected(null)}
+          >
+            <ArrowLeft size={20} />
+          </button>
+          <div>
+            <span className="admin-brand">MPC ADMIN</span>
+            <h1>Detalle del componente</h1>
+          </div>
+          <StatusBadge status={selected.verification_status} />
+        </header>
+        <Messages
+          error={error}
+          toast={toast}
+          onClear={() => setError(null)}
+        />
+        <section
+          className={
+            selected.status === 'active'
+              ? 'part-detail-hero'
+              : 'part-detail-hero archived'
+          }
+        >
+          <span className="eyebrow">
+            {selected.status === 'active' ? 'REPUESTO' : 'ARCHIVADO'}
+          </span>
+          <h2>{selected.name}</h2>
+          <div className="detail-codes">
+            <strong>SAP {selected.sap_code || '—'}</strong>
+            {selected.oem_code && <span>PN/OEM {selected.oem_code}</span>}
+            {selected.sap_code && (
+              <button
+                type="button"
+                onClick={() =>
+                  void navigator.clipboard
+                    .writeText(selected.sap_code!)
+                    .then(() => setToast('SAP copiado'))
+                }
+              >
+                <Copy size={17} /> Copiar SAP
+              </button>
+            )}
+          </div>
+        </section>
+        <div className="queue-navigation">
+          <button
+            type="button"
+            disabled={!previous || loading}
+            onClick={() => previous && void openPart(previous.id)}
+          >
+            <ArrowLeft size={18} /> Anterior
+          </button>
+          <button
+            type="button"
+            disabled={!next || loading}
+            onClick={() => next && void openPart(next.id)}
+          >
+            Siguiente <ArrowRight size={18} />
+          </button>
+        </div>
+        <section className="verification-content">
+          <Card title="Editar componente" eyebrow="DATOS PRINCIPALES">
+            <PartForm
+              value={partDraft}
+              onChange={setPartDraft}
+              saving={saving}
+              label="Guardar cambios"
+              onSubmit={async () => {
+                const ok = await mutate(
+                  () => updatePart(selected.id, partDraft),
+                  'Componente actualizado',
+                )
+                if (ok) await refreshDetail()
+              }}
+            />
+          </Card>
 
-          setSelectedFamilyId(
-            null,
-          )
+          <Card
+            title={`${compatibilities.length} modelos compatibles`}
+            eyebrow="COMPATIBILIDAD"
+            action={
+              <button
+                type="button"
+                className="primary-small"
+                disabled={selected.status !== 'active'}
+                onClick={() => setDialog('compatibility')}
+              >
+                <Plus size={17} /> Añadir
+              </button>
+            }
+          >
+            <div className="compatibility-list">
+              {compatibilities.map((relation) => (
+                <div className="compatibility-row" key={relation.id}>
+                  <span className="family-pill">
+                    {relation.family_code}
+                  </span>
+                  <div>
+                    <strong>
+                      {relation.brand} {relation.model_name}
+                    </strong>
+                    <small>
+                      {relation.family_name}
+                      {relation.variant ? ` · ${relation.variant}` : ''}
+                    </small>
+                  </div>
+                  <button
+                    type="button"
+                    className="delete-button"
+                    aria-label={`Eliminar compatibilidad con ${relation.brand} ${relation.model_name}`}
+                    onClick={async () => {
+                      if (!window.confirm('¿Eliminar esta compatibilidad?')) return
+                      const ok = await mutate(
+                        () => deleteCompatibility(selected.id, relation.model_id),
+                        'Compatibilidad eliminada',
+                      )
+                      if (ok) {
+                        setSession((current) => ({
+                          ...current,
+                          compatibilitiesRemoved:
+                            current.compatibilitiesRemoved + 1,
+                        }))
+                        await refreshDetail()
+                      }
+                    }}
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                </div>
+              ))}
+              {compatibilities.length === 0 && (
+                <Empty>Este componente no tiene modelos compatibles.</Empty>
+              )}
+            </div>
+          </Card>
 
-          setSelectedModelId(
-            null,
-          )
-        }}
-        onFamilyChange={(
-          id,
-        ) => {
-          setSelectedFamilyId(
-            id,
-          )
+          <Card title="Estado del componente" eyebrow="VALIDACIÓN">
+            <button
+              type="button"
+              className="verify-next-button"
+              disabled={saving || selected.status !== 'active'}
+              onClick={() => void verifyAndNext()}
+            >
+              <CheckCircle2 size={20} /> Verificar y siguiente
+            </button>
+            <div className="verification-actions">
+              <button
+                type="button"
+                className="verify-button warning"
+                disabled={saving}
+                onClick={() => void setVerification('review')}
+              >
+                <AlertTriangle size={18} /> Necesita revisión
+              </button>
+              <button
+                type="button"
+                className="verify-button neutral"
+                disabled={saving}
+                onClick={() => void setVerification('pending')}
+              >
+                Dejar pendiente
+              </button>
+            </div>
+          </Card>
 
-          setSelectedModelId(
-            null,
-          )
-        }}
-        onModelChange={
-          setSelectedModelId
-        }
-        onAddCompatibility={
-          handleAddCompatibility
-        }
-        onDeleteCompatibility={
-          handleDeleteCompatibility
-        }
-        onSetVerification={
-          setVerificationStatus
-        }
-        onClearError={() =>
-          setError(null)
-        }
-      />
+          <div className="danger-zone">
+            <h3>Acciones del registro</h3>
+            {selected.status === 'active' ? (
+              <button
+                type="button"
+                className="danger-action"
+                onClick={async () => {
+                  const counts = await getPartDependencyCounts(selected.id)
+                  if (!window.confirm([
+                    `Archivar: ${selected.name}`,
+                    `SAP: ${selected.sap_code || '—'}`,
+                    `Compatibilidades: ${counts.compatibilityCount}`,
+                  ].join('\n'))) return
+                  const ok = await mutate(
+                    () => archivePart(selected.id),
+                    'Componente archivado',
+                  )
+                  if (ok) await refreshDetail()
+                }}
+              >
+                <Trash2 size={18} /> Eliminar componente
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="restore-action"
+                onClick={async () => {
+                  const ok = await mutate(
+                    () => restorePart(selected.id),
+                    'Componente restaurado',
+                  )
+                  if (ok) await refreshDetail()
+                }}
+              >
+                <Undo2 size={18} /> Restaurar componente
+              </button>
+            )}
+            <p>Eliminar archiva el registro; no borra datos ni relaciones.</p>
+          </div>
+        </section>
+
+        {dialog === 'compatibility' && (
+          <CompatibilityDialog
+            families={activeFamilies}
+            models={activeModels}
+            saving={saving}
+            onClose={() => setDialog(null)}
+            onSubmit={async (modelId) => {
+              const ok = await mutate(
+                () => addCompatibility(selected.id, modelId),
+                'Compatibilidad añadida',
+              )
+              if (ok) {
+                setSession((current) => ({
+                  ...current,
+                  compatibilitiesAdded:
+                    current.compatibilitiesAdded + 1,
+                }))
+                setDialog(null)
+                await refreshDetail()
+              }
+            }}
+          />
+        )}
+      </main>
     )
   }
+
+  const total = stats?.total ?? 0
+  const verified = stats?.verified ?? 0
+  const percent = total
+    ? Math.round((verified / total) * 100)
+    : 0
 
   return (
     <main className="admin-app">
       <header className="admin-header">
         <div>
-          <span className="admin-brand">
-            MPC
-          </span>
-
-          <h1>
-            Administración de
-            repuestos
-          </h1>
+          <span className="admin-brand">MPC ADMIN</span>
+          <h1>Mantenimiento del catálogo</h1>
         </div>
-
         <div className="admin-header-actions">
+          <div
+            className={dirty ? 'database-badge dirty' : 'database-badge'}
+            role="status"
+          >
+            <Database size={15} />
+            {dirty ? 'Cambios locales pendientes' : 'SQLite local'}
+          </div>
+          <details className="database-menu">
+            <summary>
+              <Database size={17} /> Base de datos
+            </summary>
+            <div>
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+              >
+                <Upload size={17} /> Cargar BD
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void downloadDatabase()
+                  setToast('Descarga preparada')
+                }}
+              >
+                <Download size={17} /> Descargar BD
+              </button>
+              <button
+                type="button"
+                className="danger-text"
+                onClick={() => void handleReset()}
+              >
+                <RotateCcw size={17} /> Restaurar oficial
+              </button>
+            </div>
+          </details>
           <input
-            ref={
-              databaseInputRef
-            }
+            ref={fileRef}
             type="file"
             accept=".db,.sqlite,.sqlite3"
             hidden
-            onChange={
-              handleImportDatabase
-            }
+            onChange={handleImport}
           />
-
-          <button
-            type="button"
-            className="download-db-button"
-            onClick={() =>
-              databaseInputRef.current?.click()
-            }
-          >
-            <Upload size={16} />
-
-            Cargar BD
-          </button>
-
-          <button
-            type="button"
-            className="download-db-button"
-            onClick={() => {
-              void downloadDatabase()
-            }}
-          >
-            <Download
-              size={16}
-            />
-
-            Descargar BD
-          </button>
-
-          <button
-            type="button"
-            className="reset-db-button"
-            onClick={() => {
-              void handleResetDatabase()
-            }}
-          >
-            <RotateCcw
-              size={16}
-            />
-
-            Restaurar
-          </button>
-
-          <div className="database-badge">
-            <Database size={15} />
-            SQLite local
-          </div>
         </div>
       </header>
-
-      <nav className="admin-nav">
-        <button
-          type="button"
-          className={
-            section === 'parts'
-              ? 'active'
-              : ''
-          }
-          onClick={() =>
-            setSection('parts')
-          }
-        >
-          <ClipboardCheck
-            size={18}
-          />
-
-          Verificar
-        </button>
-
-        <button
-          type="button"
-          className={
-            section ===
-            'families'
-              ? 'active'
-              : ''
-          }
-          onClick={() =>
-            setSection(
-              'families',
-            )
-          }
-        >
-          <Layers3
-            size={18}
-          />
-
-          Familias
-        </button>
-
-        <button
-          type="button"
-          className={
-            section === 'models'
-              ? 'active'
-              : ''
-          }
-          onClick={() =>
-            setSection(
-              'models',
-            )
-          }
-        >
-          <Wrench size={18} />
-
-          Modelos
-        </button>
+      <div className="catalog-meta">Catálogo v{version}</div>
+      <nav className="admin-nav" aria-label="Administración">
+        {([
+          ['summary', 'Resumen', <LayoutDashboard size={18} />],
+          ['parts', 'Componentes', <ClipboardCheck size={18} />],
+          ['families', 'Familias', <Layers3 size={18} />],
+          ['models', 'Modelos', <Wrench size={18} />],
+        ] as const).map(([value, label, icon]) => (
+          <button
+            type="button"
+            key={value}
+            className={section === value ? 'active' : ''}
+            aria-pressed={section === value}
+            onClick={() => setSection(value)}
+          >
+            {icon} {label}
+          </button>
+        ))}
       </nav>
-
-      {error && (
-        <ErrorBanner
-          message={error}
-          onClose={() =>
-            setError(null)
-          }
-        />
-      )}
+      <Messages
+        error={error}
+        toast={toast}
+        onClear={() => setError(null)}
+      />
 
       {loading ? (
-        <div className="loading-state">
-          <RefreshCw
-            className="spin"
-            size={25}
-          />
-
-          Cargando MPC...
+        <div className="loading-state" role="status">
+          <RefreshCw className="spin" size={25} /> Cargando MPC...
         </div>
-      ) : (
-        <>
-          {section ===
-            'parts' && (
-            <PartsDashboard
-              parts={parts}
-              stats={stats}
-              search={search}
-              filter={filter}
-              onSearch={
-                setSearch
-              }
-              onFilter={
-                setFilter
-              }
-              onOpenPart={
-                openPart
-              }
-            />
-          )}
-
-          {section ===
-            'families' && (
-            <FamiliesAdmin
-              families={
-                families
-              }
-              code={
-                newFamilyCode
-              }
-              name={
-                newFamilyName
-              }
-              saving={saving}
-              onCodeChange={
-                setNewFamilyCode
-              }
-              onNameChange={
-                setNewFamilyName
-              }
-              onSubmit={
-                handleCreateFamily
-              }
-            />
-          )}
-
-          {section ===
-            'models' && (
-            <ModelsAdmin
-              families={
-                families
-              }
-              models={models}
-              familyId={
-                modelFamilyId
-              }
-              brand={
-                newModelBrand
-              }
-              name={
-                newModelName
-              }
-              variant={
-                newModelVariant
-              }
-              saving={saving}
-              onFamilyChange={
-                setModelFamilyId
-              }
-              onBrandChange={
-                setNewModelBrand
-              }
-              onNameChange={
-                setNewModelName
-              }
-              onVariantChange={
-                setNewModelVariant
-              }
-              onSubmit={
-                handleCreateModel
-              }
-            />
-          )}
-        </>
-      )}
-    </main>
-  )
-}
-
-/* ========================================================
-   DASHBOARD REPUESTOS
-   ======================================================== */
-
-interface PartsDashboardProps {
-  parts: ApiPart[]
-  stats: ApiPartStats | null
-
-  search: string
-
-  filter:
-    VerificationFilter
-
-  onSearch: (
-    value: string,
-  ) => void
-
-  onFilter: (
-    value:
-      VerificationFilter,
-  ) => void
-
-  onOpenPart: (
-    partId: number,
-  ) => void
-}
-
-function PartsDashboard({
-  parts,
-  stats,
-  search,
-  filter,
-  onSearch,
-  onFilter,
-  onOpenPart,
-}: PartsDashboardProps) {
-  return (
-    <>
-      <section className="dashboard-hero">
-        <span className="eyebrow">
-          VERIFICACIÓN
-        </span>
-
-        <h2>
-          Construyamos el
-          catálogo
-        </h2>
-
-        <p>
-          Revisa cada repuesto
-          y confirma únicamente
-          los modelos en los que
-          realmente aplica.
-        </p>
-      </section>
-
-      <section className="dashboard-content">
-        <div className="stats-grid">
-          <StatCard
-            label="Total"
-            value={
-              stats?.total ?? 0
-            }
-            active={
-              filter === 'all'
-            }
-            onClick={() =>
-              onFilter('all')
-            }
-          />
-
-          <StatCard
-            label="Pendientes"
-            value={
-              stats?.pending ??
-              0
-            }
-            type="pending"
-            active={
-              filter ===
-              'pending'
-            }
-            onClick={() =>
-              onFilter(
-                'pending',
-              )
-            }
-          />
-
-          <StatCard
-            label="Revisar"
-            value={
-              stats?.review ?? 0
-            }
-            type="review"
-            active={
-              filter ===
-              'review'
-            }
-            onClick={() =>
-              onFilter(
-                'review',
-              )
-            }
-          />
-
-          <StatCard
-            label="Verificados"
-            value={
-              stats?.verified ??
-              0
-            }
-            type="verified"
-            active={
-              filter ===
-              'verified'
-            }
-            onClick={() =>
-              onFilter(
-                'verified',
-              )
-            }
-          />
-        </div>
-
-        <div className="admin-search">
-          <Search size={20} />
-
-          <input
-            type="search"
-            placeholder="SAP, PN, descripción o ID..."
-            value={search}
-            onChange={(
-              event,
-            ) =>
-              onSearch(
-                event.target
-                  .value,
-              )
-            }
-          />
-
-          {search && (
+      ) : section === 'summary' ? (
+        <SummaryDashboard
+          stats={catalogStats}
+          onCreatePart={() => {
+            setPartDraft(emptyPart)
+            setDialog('new-part')
+          }}
+          onCreateFamily={() => setSection('families')}
+          onCreateModel={() => setSection('models')}
+        />
+      ) : section === 'parts' ? (
+        <section className="dashboard-content">
+          <div className="progress-card">
+            <div>
+              <span>PROGRESO</span>
+              <strong>Verificados {verified} / {total}</strong>
+              <small>
+                Pendientes {stats?.pending ?? 0} · Revisar{' '}
+                {stats?.review ?? 0}
+              </small>
+            </div>
+            <b>{percent}%</b>
+            <div
+              className="progress-track"
+              aria-label={`${percent}% verificado`}
+            >
+              <i style={{ width: `${percent}%` }} />
+            </div>
+          </div>
+          <div className="session-card">
+            <strong>Esta sesión</strong>
+            <span>+{session.verified} verificados</span>
+            <span>+{session.compatibilitiesAdded} compatibilidades</span>
+            <span>−{session.compatibilitiesRemoved} compatibilidades</span>
+            <span>+{session.partsCreated} componentes</span>
+          </div>
+          <div className="admin-toolbar">
             <button
               type="button"
-              className="clear-search"
-              onClick={() =>
-                onSearch('')
-              }
-              aria-label="Limpiar búsqueda"
+              className="primary-action"
+              onClick={() => {
+                setPartDraft(emptyPart)
+                setDialog('new-part')
+              }}
             >
-              <X size={17} />
+              <PackagePlus size={18} /> Nuevo componente
             </button>
-          )}
-        </div>
-
-        <div className="list-heading">
-          <div>
-            <span>
-              REPUESTOS
-            </span>
-
-            <h3>
-              {parts.length}{' '}
-              {parts.length ===
-              1
-                ? 'resultado'
-                : 'resultados'}
-            </h3>
+            <ArchiveToggle
+              checked={showArchived}
+              onChange={setShowArchived}
+            />
           </div>
-        </div>
-
-        <div className="parts-list">
-          {parts.map(
-            (part) => (
+          <div className="stats-grid">
+            {([
+              ['all', 'Total', total],
+              ['pending', 'Pendientes', stats?.pending ?? 0],
+              ['review', 'Revisar', stats?.review ?? 0],
+              ['verified', 'Verificados', verified],
+            ] as const).map(([value, label, count]) => (
+              <button
+                type="button"
+                key={value}
+                className={
+                  filter === value
+                    ? `stat-button ${value} active`
+                    : `stat-button ${value}`
+                }
+                aria-pressed={filter === value}
+                onClick={() => setFilter(value)}
+              >
+                <strong>{count}</strong><span>{label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="admin-search">
+            <Search size={20} />
+            <input
+              type="search"
+              aria-label="Buscar componentes"
+              placeholder="SAP, PN/OEM o nombre..."
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            {search && (
+              <button
+                type="button"
+                aria-label="Limpiar búsqueda"
+                onClick={() => setSearch('')}
+              >
+                <X size={17} />
+              </button>
+            )}
+          </div>
+          <div className="parts-list">
+            {parts.map((part) => (
               <button
                 type="button"
                 key={part.id}
-                className="admin-part-card"
-                onClick={() =>
-                  onOpenPart(
-                    part.id,
-                  )
+                className={
+                  part.status === 'active'
+                    ? 'admin-part-card'
+                    : 'admin-part-card archived'
                 }
+                onClick={() => void openPart(part.id)}
               >
-                <div className="part-symbol">
-                  <PackageSearch
-                    size={22}
-                  />
-                </div>
-
-                <div className="part-card-main">
-                  <h4>
-                    {part.name}
-                  </h4>
-
-                  <div className="part-identifiers-mini">
-                    {part.sap_code && (
-                      <span className="sap-chip">
-                        <b>
-                          SAP
-                        </b>
-
-                        {
-                          part.sap_code
-                        }
-                      </span>
-                    )}
-
-                    {part.oem_code && (
-                      <span>
-                        PN{' '}
-                        {
-                          part.oem_code
-                        }
-                      </span>
-                    )}
-
-                    {part.legacy_id && (
-                      <span>
-                        {
-                          part.legacy_id
-                        }
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <StatusBadge
-                  status={
-                    part.verification_status
-                  }
-                />
-
-                <ChevronRight
-                  size={19}
-                  className="card-arrow"
-                />
-              </button>
-            ),
-          )}
-
-          {parts.length ===
-            0 && (
-            <div className="empty-state">
-              <PackageSearch
-                size={40}
-              />
-
-              <h3>
-                Sin resultados
-              </h3>
-
-              <p>
-                Prueba con otro
-                SAP, descripción
-                o estado.
-              </p>
-            </div>
-          )}
-        </div>
-      </section>
-    </>
-  )
-}
-
-/* ========================================================
-   VERIFICAR REPUESTO
-   ======================================================== */
-
-interface SuggestionGroup {
-  familyId: number
-  familyCode: string
-  familyName: string
-  suggestions:
-    ApiSuggestion[]
-}
-
-interface PartVerificationProps {
-  part: ApiPart
-
-  compatibilities:
-    ApiCompatibility[]
-
-  suggestionGroups:
-    SuggestionGroup[]
-
-  families: ApiFamily[]
-
-  availableModels:
-    ApiModel[]
-
-  selectedFamilyId:
-    number | null
-
-  selectedModelId:
-    number | null
-
-  showAddCompatibility:
-    boolean
-
-  copiedSap: boolean
-  saving: boolean
-  loading: boolean
-
-  error:
-    string | null
-
-  onBack: () => void
-
-  onCopySap: (
-    code: string,
-  ) => void
-
-  onOpenAdd: () => void
-  onCloseAdd: () => void
-
-  onFamilyChange: (
-    id: number,
-  ) => void
-
-  onModelChange: (
-    id: number,
-  ) => void
-
-  onAddCompatibility: (
-    modelId?:
-      number | null,
-  ) => void
-
-  onDeleteCompatibility: (
-    modelId: number,
-  ) => void
-
-  onSetVerification: (
-    status:
-      | 'pending'
-      | 'review'
-      | 'verified',
-  ) => void
-
-  onClearError: () => void
-}
-
-function PartVerification({
-  part,
-  compatibilities,
-  suggestionGroups,
-  families,
-  availableModels,
-  selectedFamilyId,
-  selectedModelId,
-  showAddCompatibility,
-  copiedSap,
-  saving,
-  loading,
-  error,
-  onBack,
-  onCopySap,
-  onOpenAdd,
-  onCloseAdd,
-  onFamilyChange,
-  onModelChange,
-  onAddCompatibility,
-  onDeleteCompatibility,
-  onSetVerification,
-  onClearError,
-}: PartVerificationProps) {
-  return (
-    <main className="admin-app">
-      <header className="detail-header">
-        <button
-          type="button"
-          className="back-button"
-          onClick={onBack}
-        >
-          <ArrowLeft
-            size={20}
-          />
-        </button>
-
-        <div>
-          <span className="admin-brand">
-            MPC
-          </span>
-
-          <h1>
-            Verificar producto
-          </h1>
-        </div>
-
-        <StatusBadge
-          status={
-            part.verification_status
-          }
-        />
-      </header>
-
-      {error && (
-        <ErrorBanner
-          message={error}
-          onClose={
-            onClearError
-          }
-        />
-      )}
-
-      <section className="part-detail-hero">
-        <span className="eyebrow">
-          {part.legacy_id ??
-            `REPUESTO ${part.id}`}
-        </span>
-
-        <h2>
-          {part.name}
-        </h2>
-
-        {part.sap_code && (
-          <div className="sap-display">
-            <div>
-              <span>
-                CÓDIGO SAP
-              </span>
-
-              <strong>
-                {part.sap_code}
-              </strong>
-            </div>
-
-            <button
-              type="button"
-              className={
-                copiedSap
-                  ? 'copy-sap copied'
-                  : 'copy-sap'
-              }
-              onClick={() =>
-                onCopySap(
-                  part.sap_code!,
-                )
-              }
-            >
-              {copiedSap ? (
-                <>
-                  <Check
-                    size={19}
-                  />
-
-                  Copiado
-                </>
-              ) : (
-                <>
-                  <Copy
-                    size={19}
-                  />
-
-                  Copiar
-                </>
-              )}
-            </button>
-          </div>
-        )}
-
-        {part.oem_code && (
-          <div className="secondary-code">
-            <span>
-              PN / OEM
-            </span>
-
-            <strong>
-              {part.oem_code}
-            </strong>
-          </div>
-        )}
-      </section>
-
-      {loading ? (
-        <div className="loading-state">
-          <RefreshCw
-            className="spin"
-            size={22}
-          />
-
-          Cargando...
-        </div>
-      ) : (
-        <section className="verification-content">
-          <div className="verification-section">
-            <div className="section-heading-row">
-              <div>
-                <span>
-                  COMPATIBILIDADES
-                  CONFIRMADAS
+                <span className="part-symbol">
+                  <PackageSearch size={22} />
                 </span>
-
-                <h3>
-                  {
-                    compatibilities.length
-                  }{' '}
-                  {compatibilities.length ===
-                  1
-                    ? 'modelo'
-                    : 'modelos'}
-                </h3>
-              </div>
-
-              <button
-                type="button"
-                className="primary-small"
-                onClick={
-                  onOpenAdd
-                }
-              >
-                <Plus
-                  size={17}
-                />
-
-                Añadir
+                <span className="part-card-main">
+                  <strong>{part.name}</strong>
+                  <small>
+                    SAP {part.sap_code || '—'}
+                    {' · '}PN/OEM {part.oem_code || '—'}
+                    {' · '}{part.compatibility_count ?? 0} modelos
+                    {part.status !== 'active' ? ' · Archivado' : ''}
+                  </small>
+                </span>
+                <StatusBadge status={part.verification_status} />
               </button>
-            </div>
-
-            <div className="compatibility-list">
-              {compatibilities.map(
-                (
-                  compatibility,
-                ) => (
-                  <div
-                    key={
-                      compatibility.id
-                    }
-                    className="compatibility-row"
+            ))}
+            {parts.length === 0 && (
+              <div className="guided-empty">
+                <Empty>No hay componentes registrados con estos filtros.</Empty>
+                {!search && filter === 'all' && !showArchived && (
+                  <button
+                    type="button"
+                    className="primary-action"
+                    onClick={() => {
+                      setPartDraft(emptyPart)
+                      setDialog('new-part')
+                    }}
                   >
-                    <div className="family-pill">
-                      {
-                        compatibility.family_code
-                      }
-                    </div>
-
-                    <div>
-                      <strong>
-                        {
-                          compatibility.brand
-                        }{' '}
-                        {
-                          compatibility.model_name
-                        }
-
-                        {compatibility.variant
-                          ? ` · ${compatibility.variant}`
-                          : ''}
-                      </strong>
-
-                      <span>
-                        {
-                          compatibility.family_name
-                        }
-                      </span>
-                    </div>
-
-                    <button
-                      type="button"
-                      className="delete-button"
-                      onClick={() =>
-                        onDeleteCompatibility(
-                          compatibility.model_id,
-                        )
-                      }
-                      disabled={
-                        saving
-                      }
-                      aria-label="Eliminar compatibilidad"
-                    >
-                      <Trash2
-                        size={18}
-                      />
-                    </button>
-                  </div>
-                ),
-              )}
-
-              {compatibilities.length ===
-                0 && (
-                <div className="empty-compact">
-                  Todavía no se
-                  ha confirmado
-                  ningún modelo.
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="verification-section">
-            <div className="section-heading-row">
-              <div>
-                <span>
-                  AYUDA HISTÓRICA
-                </span>
-
-                <h3>
-                  Sugerencias
-                </h3>
+                    <PackagePlus size={18} /> Crear primer componente
+                  </button>
+                )}
               </div>
-            </div>
-
-            <p className="section-help">
-              Estas relaciones
-              provienen de la
-              información histórica.
-              No se consideran
-              compatibilidades
-              confirmadas hasta que
-              las añadas.
-            </p>
-
-            <div className="suggestions-list">
-              {suggestionGroups.map(
-                (group) => (
-                  <div
-                    className="suggestion-group"
-                    key={
-                      group.familyId
-                    }
-                  >
-                    <div className="suggestion-family">
-                      <div className="family-pill warning">
-                        {
-                          group.familyCode
-                        }
-                      </div>
-
-                      <div>
-                        <strong>
-                          {
-                            group.familyName
-                          }
-                        </strong>
-
-                        <span>
-                          Evidencia
-                          histórica
-                        </span>
-                      </div>
-                    </div>
-
-                    {group.suggestions.map(
-                      (
-                        suggestion,
-                      ) => {
-                        const alreadyAdded =
-                          suggestion.model_id !==
-                            null &&
-                          compatibilities.some(
-                            (
-                              item,
-                            ) =>
-                              item.model_id ===
-                              suggestion.model_id,
-                          )
-
-                        return (
-                          <div
-                            className="suggestion-model"
-                            key={
-                              suggestion.id
-                            }
-                          >
-                            <div>
-                              {suggestion.model_id ? (
-                                <>
-                                  <strong>
-                                    {
-                                      suggestion.brand
-                                    }{' '}
-                                    {
-                                      suggestion.model_name
-                                    }
-
-                                    {suggestion.variant
-                                      ? ` · ${suggestion.variant}`
-                                      : ''}
-                                  </strong>
-
-                                  <span>
-                                    Confianza:{' '}
-                                    {translateConfidence(
-                                      suggestion.confidence,
-                                    )}
-                                  </span>
-                                </>
-                              ) : (
-                                <>
-                                  <strong>
-                                    Modelo
-                                    sin
-                                    identificar
-                                  </strong>
-
-                                  <span>
-                                    Solo
-                                    conocemos
-                                    la
-                                    familia
-                                  </span>
-                                </>
-                              )}
-                            </div>
-
-                            {suggestion.model_id ? (
-                              <button
-                                type="button"
-                                className="suggestion-add"
-                                disabled={
-                                  saving ||
-                                  alreadyAdded
-                                }
-                                onClick={() =>
-                                  onAddCompatibility(
-                                    suggestion.model_id,
-                                  )
-                                }
-                              >
-                                {alreadyAdded ? (
-                                  <>
-                                    <Check
-                                      size={
-                                        16
-                                      }
-                                    />
-
-                                    Añadido
-                                  </>
-                                ) : (
-                                  <>
-                                    <Plus
-                                      size={
-                                        16
-                                      }
-                                    />
-
-                                    Añadir
-                                  </>
-                                )}
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                className="suggestion-add"
-                                onClick={() => {
-                                  onFamilyChange(
-                                    group.familyId,
-                                  )
-
-                                  onOpenAdd()
-                                }}
-                              >
-                                Elegir modelo
-                              </button>
-                            )}
-                          </div>
-                        )
-                      },
-                    )}
-                  </div>
-                ),
-              )}
-
-              {suggestionGroups.length ===
-                0 && (
-                <div className="empty-compact">
-                  Este repuesto no
-                  tiene sugerencias
-                  históricas.
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="verification-section">
-            <div className="section-heading-row">
-              <div>
-                <span>
-                  VALIDACIÓN
-                </span>
-
-                <h3>
-                  Estado del
-                  repuesto
-                </h3>
-              </div>
-            </div>
-
-            <div className="verification-actions">
-              <button
-                type="button"
-                className="verify-button success"
-                disabled={
-                  saving
-                }
-                onClick={() =>
-                  onSetVerification(
-                    'verified',
-                  )
-                }
-              >
-                <CheckCircle2
-                  size={19}
-                />
-
-                Marcar
-                verificado
-              </button>
-
-              <button
-                type="button"
-                className="verify-button warning"
-                disabled={
-                  saving
-                }
-                onClick={() =>
-                  onSetVerification(
-                    'review',
-                  )
-                }
-              >
-                <AlertTriangle
-                  size={19}
-                />
-
-                Necesita
-                revisión
-              </button>
-
-              <button
-                type="button"
-                className="verify-button neutral"
-                disabled={
-                  saving
-                }
-                onClick={() =>
-                  onSetVerification(
-                    'pending',
-                  )
-                }
-              >
-                Dejar pendiente
-              </button>
-            </div>
+            )}
           </div>
         </section>
-      )}
-
-      {showAddCompatibility && (
-        <div className="modal-backdrop">
-          <div
-            className="modal-card"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Añadir compatibilidad"
-          >
-            <div className="modal-header">
-              <div>
-                <span>
-                  NUEVA RELACIÓN
-                </span>
-
-                <h3>
-                  Añadir
-                  compatibilidad
-                </h3>
-              </div>
-
+      ) : section === 'families' ? (
+        <MaintenanceSection
+          title="Familias"
+          description="Edita, archiva o restaura familias sin perder relaciones."
+          showArchived={showArchived}
+          onShowArchived={setShowArchived}
+          create={
+            <FamilyForm
+              saving={saving}
+              onSubmit={async (data) => {
+                await mutate(
+                  () => createFamily(data.code, data.name, data.notes),
+                  'Familia creada',
+                )
+              }}
+            />
+          }
+        >
+          {(showArchived ? families : activeFamilies).map((family) => (
+            <MaintenanceRow
+              key={family.id}
+              archived={family.status !== 'active'}
+              code={family.code}
+              title={family.name}
+              subtitle={`${family.model_count ?? 0} modelos`}
+              onEdit={() => setEditingFamily(family)}
+              onArchive={async () => {
+                const counts = await getFamilyDependencyCounts(family.id)
+                if (!window.confirm([
+                  `Archivar ${family.code} — ${family.name}`,
+                  `Modelos: ${counts.modelCount}`,
+                  `Compatibilidades: ${counts.compatibilityCount}`,
+                ].join('\n'))) return
+                await mutate(
+                  () => archiveFamily(family.id),
+                  'Familia archivada',
+                )
+              }}
+              onRestore={() =>
+                void mutate(
+                  () => restoreFamily(family.id),
+                  'Familia restaurada',
+                )
+              }
+            />
+          ))}
+          {(showArchived ? families : activeFamilies).length === 0 && (
+            <Empty>No hay familias creadas.</Empty>
+          )}
+        </MaintenanceSection>
+      ) : (
+        <MaintenanceSection
+          title="Modelos"
+          description="Mantén familia, marca, modelo y variante."
+          showArchived={showArchived}
+          onShowArchived={setShowArchived}
+          create={activeFamilies.length > 0 ? (
+            <ModelForm
+              families={activeFamilies}
+              saving={saving}
+              onSubmit={async (data) => {
+                await mutate(
+                  () => createModel(data),
+                  'Modelo creado',
+                )
+              }}
+            />
+          ) : (
+            <div className="guided-empty">
+              <Empty>Primero crea una familia.</Empty>
               <button
                 type="button"
-                onClick={
-                  onCloseAdd
-                }
+                className="primary-action"
+                onClick={() => setSection('families')}
               >
-                <X
-                  size={21}
-                />
+                <Plus size={18} /> Crear familia
               </button>
             </div>
-
-            <label>
-              Familia
-
-              <select
-                value={
-                  selectedFamilyId ??
-                  ''
-                }
-                onChange={(
-                  event,
-                ) => {
-                  const value =
-                    Number(
-                      event
-                        .target
-                        .value,
-                    )
-
-                  if (
-                    Number.isInteger(
-                      value,
-                    ) &&
-                    value > 0
-                  ) {
-                    onFamilyChange(
-                      value,
-                    )
-                  }
-                }}
-              >
-                <option value="">
-                  Selecciona
-                  familia
-                </option>
-
-                {families.map(
-                  (
-                    family,
-                  ) => (
-                    <option
-                      key={
-                        family.id
-                      }
-                      value={
-                        family.id
-                      }
-                    >
-                      {
-                        family.code
-                      }{' '}
-                      —{' '}
-                      {
-                        family.name
-                      }
-                    </option>
-                  ),
-                )}
-              </select>
-            </label>
-
-            <label>
-              Modelo
-
-              <select
-                value={
-                  selectedModelId ??
-                  ''
-                }
-                disabled={
-                  !selectedFamilyId
-                }
-                onChange={(
-                  event,
-                ) => {
-                  const value =
-                    Number(
-                      event
-                        .target
-                        .value,
-                    )
-
-                  if (
-                    Number.isInteger(
-                      value,
-                    ) &&
-                    value > 0
-                  ) {
-                    onModelChange(
-                      value,
-                    )
-                  }
-                }}
-              >
-                <option value="">
-                  Selecciona
-                  modelo
-                </option>
-
-                {availableModels.map(
-                  (
-                    model,
-                  ) => (
-                    <option
-                      key={
-                        model.id
-                      }
-                      value={
-                        model.id
-                      }
-                    >
-                      {
-                        model.brand
-                      }{' '}
-                      {
-                        model.name
-                      }
-
-                      {model.variant
-                        ? ` — ${model.variant}`
-                        : ''}
-                    </option>
-                  ),
-                )}
-              </select>
-            </label>
-
-            {selectedFamilyId &&
-              availableModels.length ===
-                0 && (
-                <div className="empty-compact">
-                  Esta familia
-                  todavía no tiene
-                  modelos.
-                </div>
-              )}
-
-            <button
-              type="button"
-              className="modal-submit"
-              disabled={
-                !selectedModelId ||
-                saving
+          )}
+        >
+          {(showArchived ? models : activeModels).map((model) => (
+            <MaintenanceRow
+              key={model.id}
+              archived={model.status !== 'active'}
+              code={model.family_code}
+              title={`${model.brand} ${model.name}`}
+              subtitle={
+                model.variant
+                  ? `${model.family_name} · ${model.variant}`
+                  : model.family_name
               }
-              onClick={() =>
-                onAddCompatibility()
+              onEdit={() => setEditingModel(model)}
+              onArchive={async () => {
+                const counts = await getModelDependencyCounts(model.id)
+                if (!window.confirm(
+                  `Archivar ${model.brand} ${model.name}?\nCompatibilidades: ${counts.compatibilityCount}`,
+                )) return
+                await mutate(
+                  () => archiveModel(model.id),
+                  'Modelo archivado',
+                )
+              }}
+              onRestore={() =>
+                void mutate(
+                  () => restoreModel(model.id),
+                  'Modelo restaurado',
+                )
               }
-            >
-              <Plus
-                size={18}
-              />
+            />
+          ))}
+          {(showArchived ? models : activeModels).length === 0 &&
+            activeFamilies.length > 0 && (
+              <Empty>No hay modelos creados.</Empty>
+            )}
+        </MaintenanceSection>
+      )}
 
-              Añadir
-              compatibilidad
-            </button>
-          </div>
-        </div>
+      {dialog === 'new-part' && (
+        <Dialog title="Nuevo componente" onClose={() => setDialog(null)}>
+          <PartForm
+            value={partDraft}
+            onChange={setPartDraft}
+            saving={saving}
+            label="Crear componente"
+            autoFocus
+            onSubmit={async () => {
+              let created: ApiPart | null = null
+              const ok = await mutate(
+                async () => {
+                  created = await createPart(partDraft)
+                },
+                'Componente creado',
+              )
+              if (ok && created) {
+                setSession((current) => ({
+                  ...current,
+                  partsCreated: current.partsCreated + 1,
+                }))
+                setDialog(null)
+                setPartDraft(emptyPart)
+                await openPart((created as ApiPart).id)
+              }
+            }}
+          />
+        </Dialog>
+      )}
+      {editingFamily && (
+        <Dialog
+          title="Editar familia"
+          onClose={() => setEditingFamily(null)}
+        >
+          <FamilyForm
+            family={editingFamily}
+            saving={saving}
+            onSubmit={async (data) => {
+              const ok = await mutate(
+                () => updateFamily(editingFamily.id, data),
+                'Familia actualizada',
+              )
+              if (ok) setEditingFamily(null)
+            }}
+          />
+        </Dialog>
+      )}
+      {editingModel && (
+        <Dialog
+          title="Editar modelo"
+          onClose={() => setEditingModel(null)}
+        >
+          <ModelForm
+            model={editingModel}
+            families={activeFamilies}
+            saving={saving}
+            onSubmit={async (data) => {
+              const ok = await mutate(
+                () => updateModel(editingModel.id, data),
+                'Modelo actualizado',
+              )
+              if (ok) setEditingModel(null)
+            }}
+          />
+        </Dialog>
       )}
     </main>
   )
 }
 
-/* ========================================================
-   FAMILIAS
-   ======================================================== */
-
-function FamiliesAdmin({
-  families,
-  code,
-  name,
-  saving,
-  onCodeChange,
-  onNameChange,
-  onSubmit,
+function SummaryDashboard({
+  stats,
+  onCreatePart,
+  onCreateFamily,
+  onCreateModel,
 }: {
-  families:
-    ApiFamily[]
-
-  code: string
-  name: string
-  saving: boolean
-
-  onCodeChange: (
-    value: string,
-  ) => void
-
-  onNameChange: (
-    value: string,
-  ) => void
-
-  onSubmit: (
-    event:
-      FormEvent<HTMLFormElement>,
-  ) => void
+  stats: ApiCatalogStats | null
+  onCreatePart: () => void
+  onCreateFamily: () => void
+  onCreateModel: () => void
 }) {
+  const total = stats?.parts ?? 0
+  const verified = stats?.verified ?? 0
+  const percent = total
+    ? Math.round((verified / total) * 100)
+    : 0
+  const empty =
+    !stats ||
+    (stats.parts === 0 &&
+      stats.families === 0 &&
+      stats.models === 0)
+
   return (
-    <section className="admin-content">
+    <section className="admin-content master-summary">
       <div className="admin-page-title">
-        <span>
-          CATÁLOGO
-        </span>
-
-        <h2>
-          Familias
-        </h2>
-
+        <span>SISTEMA MAESTRO</span>
+        <h2>Resumen del catálogo</h2>
         <p>
-          Crea una familia una
-          sola vez. Los modelos
-          posteriormente se
-          relacionan con ella.
+          Construye familias, modelos, componentes y sus compatibilidades.
         </p>
       </div>
 
-      <form
-        className="create-form"
-        onSubmit={onSubmit}
-      >
-        <h3>
-          <Plus size={18} />
-
-          Nueva familia
-        </h3>
-
-        <div className="form-grid">
-          <label>
-            Código
-
-            <input
-              value={code}
-              maxLength={10}
-              placeholder="Ej. PE"
-              onChange={(
-                event,
-              ) =>
-                onCodeChange(
-                  event.target.value.toUpperCase(),
-                )
-              }
-            />
-          </label>
-
-          <label>
-            Nombre
-
-            <input
-              value={name}
-              placeholder="Ej. Planta eléctrica"
-              onChange={(
-                event,
-              ) =>
-                onNameChange(
-                  event.target.value,
-                )
-              }
-            />
-          </label>
+      {empty && (
+        <div className="master-empty">
+          <PackagePlus size={38} />
+          <h3>El catálogo está vacío.</h3>
+          <p>
+            Empieza creando una familia, después sus modelos y finalmente
+            los componentes.
+          </p>
+          <ol>
+            <li>Crear familia</li>
+            <li>Crear modelo</li>
+            <li>Crear componente</li>
+          </ol>
         </div>
+      )}
 
-        <button
-          type="submit"
-          className="form-submit"
-          disabled={
-            saving
-          }
-        >
-          <Plus size={18} />
+      <div className="master-stats-grid">
+        <Stat label="Componentes" value={stats?.parts ?? 0} />
+        <Stat label="Familias" value={stats?.families ?? 0} />
+        <Stat label="Modelos" value={stats?.models ?? 0} />
+        <Stat label="Compatibilidades" value={stats?.compatibilities ?? 0} />
+        <Stat label="Pendientes" value={stats?.pending ?? 0} />
+        <Stat label="Revisar" value={stats?.review ?? 0} />
+        <Stat label="Verificados" value={verified} />
+      </div>
 
-          Crear familia
+      <div className="progress-card">
+        <div>
+          <span>VERIFICACIÓN</span>
+          <strong>Verificados {verified} / {total}</strong>
+        </div>
+        <b>{percent}%</b>
+        <div className="progress-track" aria-label={`${percent}% verificado`}>
+          <i style={{ width: `${percent}%` }} />
+        </div>
+      </div>
+
+      <div className="quick-actions">
+        <button type="button" onClick={onCreateFamily}>
+          <Layers3 size={19} /> Nueva familia
         </button>
-      </form>
-
-      <div className="catalog-list">
-        {families.map(
-          (family) => (
-            <div
-              className="catalog-row"
-              key={
-                family.id
-              }
-            >
-              <div className="family-pill">
-                {
-                  family.code
-                }
-              </div>
-
-              <div>
-                <strong>
-                  {
-                    family.name
-                  }
-                </strong>
-
-                <span>
-                  {
-                    family.model_count ??
-                    0
-                  }{' '}
-                  modelos
-                </span>
-              </div>
-            </div>
-          ),
-        )}
+        <button type="button" onClick={onCreateModel}>
+          <Wrench size={19} /> Nuevo modelo
+        </button>
+        <button type="button" onClick={onCreatePart}>
+          <PackagePlus size={19} /> Nuevo componente
+        </button>
       </div>
     </section>
   )
 }
 
-/* ========================================================
-   MODELOS
-   ======================================================== */
-
-function ModelsAdmin({
-  families,
-  models,
-  familyId,
-  brand,
-  name,
-  variant,
-  saving,
-  onFamilyChange,
-  onBrandChange,
-  onNameChange,
-  onVariantChange,
-  onSubmit,
-}: {
-  families:
-    ApiFamily[]
-
-  models:
-    ApiModel[]
-
-  familyId:
-    number | null
-
-  brand: string
-  name: string
-  variant: string
-  saving: boolean
-
-  onFamilyChange: (
-    value: number,
-  ) => void
-
-  onBrandChange: (
-    value: string,
-  ) => void
-
-  onNameChange: (
-    value: string,
-  ) => void
-
-  onVariantChange: (
-    value: string,
-  ) => void
-
-  onSubmit: (
-    event:
-      FormEvent<HTMLFormElement>,
-  ) => void
-}) {
-  return (
-    <section className="admin-content">
-      <div className="admin-page-title">
-        <span>
-          CATÁLOGO
-        </span>
-
-        <h2>
-          Modelos
-        </h2>
-
-        <p>
-          Cada modelo pertenece
-          a una única familia.
-        </p>
-      </div>
-
-      <form
-        className="create-form"
-        onSubmit={onSubmit}
-      >
-        <h3>
-          <Plus size={18} />
-
-          Nuevo modelo
-        </h3>
-
-        <div className="form-grid">
-          <label>
-            Familia
-
-            <select
-              value={
-                familyId ??
-                ''
-              }
-              onChange={(
-                event,
-              ) => {
-                const value =
-                  Number(
-                    event
-                      .target
-                      .value,
-                  )
-
-                if (
-                  Number.isInteger(
-                    value,
-                  ) &&
-                  value > 0
-                ) {
-                  onFamilyChange(
-                    value,
-                  )
-                }
-              }}
-            >
-              <option value="">
-                Selecciona
-                familia
-              </option>
-
-              {families.map(
-                (
-                  family,
-                ) => (
-                  <option
-                    value={
-                      family.id
-                    }
-                    key={
-                      family.id
-                    }
-                  >
-                    {
-                      family.code
-                    }{' '}
-                    —{' '}
-                    {
-                      family.name
-                    }
-                  </option>
-                ),
-              )}
-            </select>
-          </label>
-
-          <label>
-            Marca
-
-            <input
-              value={brand}
-              placeholder="Ej. TLD"
-              onChange={(
-                event,
-              ) =>
-                onBrandChange(
-                  event.target.value,
-                )
-              }
-            />
-          </label>
-
-          <label>
-            Modelo
-
-            <input
-              value={name}
-              placeholder="Ej. JST25"
-              onChange={(
-                event,
-              ) =>
-                onNameChange(
-                  event.target.value,
-                )
-              }
-            />
-          </label>
-
-          <label>
-            Variante
-
-            <span className="optional">
-              opcional
-            </span>
-
-            <input
-              value={variant}
-              placeholder="Ej. DIESEL"
-              onChange={(
-                event,
-              ) =>
-                onVariantChange(
-                  event.target.value,
-                )
-              }
-            />
-          </label>
-        </div>
-
-        <button
-          type="submit"
-          className="form-submit"
-          disabled={
-            saving
-          }
-        >
-          <Plus size={18} />
-
-          Crear modelo
-        </button>
-      </form>
-
-      <div className="catalog-list">
-        {models.map(
-          (model) => (
-            <div
-              className="catalog-row"
-              key={model.id}
-            >
-              <div className="family-pill">
-                {
-                  model.family_code
-                }
-              </div>
-
-              <div>
-                <strong>
-                  {
-                    model.brand
-                  }{' '}
-                  {
-                    model.name
-                  }
-                </strong>
-
-                <span>
-                  {
-                    model.family_name
-                  }
-
-                  {model.variant
-                    ? ` · ${model.variant}`
-                    : ''}
-                </span>
-              </div>
-            </div>
-          ),
-        )}
-      </div>
-    </section>
-  )
-}
-
-/* ========================================================
-   COMPONENTES PEQUEÑOS
-   ======================================================== */
-
-function StatCard({
+function Stat({
   label,
   value,
-  type = 'total',
-  active,
-  onClick,
 }: {
   label: string
   value: number
-
-  type?:
-    | 'total'
-    | 'pending'
-    | 'review'
-    | 'verified'
-
-  active: boolean
-
-  onClick: () => void
 }) {
   return (
-    <button
-      type="button"
-      className={`stat-button ${type} ${
-        active
-          ? 'active'
-          : ''
-      }`}
-      onClick={onClick}
-    >
-      <strong>
-        {value}
-      </strong>
+    <div className="master-stat">
+      <strong>{value}</strong>
+      <span>{label}</span>
+    </div>
+  )
+}
 
-      <span>
-        {label}
-      </span>
-    </button>
+function PartForm({
+  value,
+  onChange,
+  saving,
+  label,
+  autoFocus = false,
+  onSubmit,
+}: {
+  value: PartInput
+  onChange: (value: PartInput) => void
+  saving: boolean
+  label: string
+  autoFocus?: boolean
+  onSubmit: () => Promise<void>
+}) {
+  const field = (name: keyof PartInput, next: string) =>
+    onChange({ ...value, [name]: next })
+  return (
+    <form
+      className="edit-form"
+      onSubmit={(event) => {
+        event.preventDefault()
+        void onSubmit()
+      }}
+    >
+      <div className="form-grid">
+        <label>
+          Nombre
+          <input
+            autoFocus={autoFocus}
+            required
+            value={value.name}
+            onChange={(event) => field('name', event.target.value)}
+          />
+        </label>
+        <label>
+          Código SAP
+          <input
+            value={value.sapCode}
+            onChange={(event) => field('sapCode', event.target.value)}
+          />
+        </label>
+        <label>
+          PN/OEM
+          <input
+            value={value.oemCode}
+            onChange={(event) => field('oemCode', event.target.value)}
+          />
+        </label>
+        <label className="wide-field">
+          Notas
+          <textarea
+            value={value.notes}
+            onChange={(event) => field('notes', event.target.value)}
+          />
+        </label>
+      </div>
+      <button
+        className="form-submit"
+        disabled={saving || !value.name.trim()}
+      >
+        <Save size={18} /> {saving ? 'Guardando...' : label}
+      </button>
+    </form>
+  )
+}
+
+function FamilyForm({
+  family,
+  saving,
+  onSubmit,
+}: {
+  family?: ApiFamily
+  saving: boolean
+  onSubmit: (data: {
+    code: string
+    name: string
+    notes?: string
+  }) => Promise<void>
+}) {
+  const [code, setCode] = useState(family?.code ?? '')
+  const [name, setName] = useState(family?.name ?? '')
+  const [notes, setNotes] = useState(family?.notes ?? '')
+  return (
+    <form
+      className="create-form"
+      onSubmit={(event) => {
+        event.preventDefault()
+        void onSubmit({ code, name, notes }).then(() => {
+          if (!family) {
+            setCode('')
+            setName('')
+            setNotes('')
+          }
+        })
+      }}
+    >
+      <div className="form-grid">
+        <label>
+          Código
+          <input
+            autoFocus={Boolean(family)}
+            required
+            value={code}
+            onChange={(event) =>
+              setCode(event.target.value.toUpperCase())
+            }
+          />
+        </label>
+        <label>
+          Nombre
+          <input
+            required
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
+        <label className="wide-field">
+          Notas
+          <textarea
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+          />
+        </label>
+      </div>
+      <button className="form-submit" disabled={saving}>
+        {family ? <Save size={18} /> : <Plus size={18} />}
+        {family ? 'Guardar cambios' : 'Crear familia'}
+      </button>
+    </form>
+  )
+}
+
+function ModelForm({
+  model,
+  families,
+  saving,
+  onSubmit,
+}: {
+  model?: ApiModel
+  families: ApiFamily[]
+  saving: boolean
+  onSubmit: (data: ModelInput) => Promise<void>
+}) {
+  const [value, setValue] = useState<ModelInput>({
+    familyId: model?.family_id ?? families[0]?.id ?? 0,
+    brand: model?.brand ?? '',
+    name: model?.name ?? '',
+    variant: model?.variant ?? '',
+  })
+  const field = (
+    name: keyof ModelInput,
+    next: string | number,
+  ) => setValue((current) => ({ ...current, [name]: next }))
+  return (
+    <form
+      className="create-form"
+      onSubmit={(event) => {
+        event.preventDefault()
+        void onSubmit(value).then(() => {
+          if (!model) {
+            setValue((current) => ({
+              ...current,
+              brand: '',
+              name: '',
+              variant: '',
+            }))
+          }
+        })
+      }}
+    >
+      <div className="form-grid">
+        <label>
+          Familia
+          <select
+            value={value.familyId}
+            onChange={(event) =>
+              field('familyId', Number(event.target.value))
+            }
+          >
+            {families.map((family) => (
+              <option value={family.id} key={family.id}>
+                {family.code} — {family.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Marca
+          <input
+            required
+            value={value.brand}
+            onChange={(event) => field('brand', event.target.value)}
+          />
+        </label>
+        <label>
+          Modelo
+          <input
+            required
+            value={value.name}
+            onChange={(event) => field('name', event.target.value)}
+          />
+        </label>
+        <label>
+          Variante
+          <input
+            value={value.variant}
+            onChange={(event) => field('variant', event.target.value)}
+          />
+        </label>
+      </div>
+      <button
+        className="form-submit"
+        disabled={
+          saving ||
+          !value.familyId ||
+          !value.brand.trim() ||
+          !value.name.trim()
+        }
+      >
+        {model ? <Save size={18} /> : <Plus size={18} />}
+        {model ? 'Guardar cambios' : 'Crear modelo'}
+      </button>
+    </form>
+  )
+}
+
+function CompatibilityDialog({
+  families,
+  models,
+  saving,
+  onClose,
+  onSubmit,
+}: {
+  families: ApiFamily[]
+  models: ApiModel[]
+  saving: boolean
+  onClose: () => void
+  onSubmit: (modelId: number) => Promise<void>
+}) {
+  const [familyId, setFamilyId] =
+    useState(families[0]?.id ?? 0)
+  const [modelId, setModelId] = useState(0)
+  const available = models.filter((item) => item.family_id === familyId)
+  return (
+    <Dialog title="Añadir compatibilidad" onClose={onClose}>
+      <label>
+        Familia
+        <select
+          autoFocus
+          value={familyId}
+          onChange={(event) => {
+            setFamilyId(Number(event.target.value))
+            setModelId(0)
+          }}
+        >
+          {families.map((family) => (
+            <option value={family.id} key={family.id}>
+              {family.code} — {family.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Modelo
+        <select
+          value={modelId}
+          onChange={(event) => setModelId(Number(event.target.value))}
+        >
+          <option value={0}>Selecciona modelo</option>
+          {available.map((model) => (
+            <option value={model.id} key={model.id}>
+              {model.brand} {model.name}
+              {model.variant ? ` — ${model.variant}` : ''}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button
+        type="button"
+        className="modal-submit"
+        disabled={!modelId || saving}
+        onClick={() => void onSubmit(modelId)}
+      >
+        <Plus size={18} /> Añadir compatibilidad
+      </button>
+    </Dialog>
+  )
+}
+
+function Dialog({
+  title,
+  onClose,
+  children,
+}: {
+  title: string
+  onClose: () => void
+  children: ReactNode
+}) {
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', close)
+    return () => window.removeEventListener('keydown', close)
+  }, [onClose])
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.currentTarget === event.target) onClose()
+      }}
+    >
+      <div
+        className="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="dialog-title"
+      >
+        <div className="modal-header">
+          <h3 id="dialog-title">{title}</h3>
+          <button
+            type="button"
+            aria-label="Cerrar diálogo"
+            onClick={onClose}
+          >
+            <X size={21} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function MaintenanceSection({
+  title,
+  description,
+  showArchived,
+  onShowArchived,
+  create,
+  children,
+}: {
+  title: string
+  description: string
+  showArchived: boolean
+  onShowArchived: (value: boolean) => void
+  create: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <section className="admin-content">
+      <div className="admin-page-title">
+        <span>CATÁLOGO</span>
+        <h2>{title}</h2>
+        <p>{description}</p>
+      </div>
+      <ArchiveToggle
+        checked={showArchived}
+        onChange={onShowArchived}
+      />
+      {create}
+      <div className="maintenance-list">{children}</div>
+    </section>
+  )
+}
+
+function MaintenanceRow({
+  archived,
+  code,
+  title,
+  subtitle,
+  onEdit,
+  onArchive,
+  onRestore,
+}: {
+  archived: boolean
+  code: string
+  title: string
+  subtitle: string
+  onEdit: () => void
+  onArchive: () => Promise<void>
+  onRestore: () => void
+}) {
+  return (
+    <article
+      className={
+        archived
+          ? 'maintenance-card archived'
+          : 'maintenance-card'
+      }
+    >
+      <div>
+        <span className="family-pill">{code}</span>
+        <strong>{title}</strong>
+        <small>
+          {subtitle}{archived ? ' · Archivado' : ''}
+        </small>
+      </div>
+      <div className="row-actions">
+        <button type="button" onClick={onEdit}>Editar</button>
+        {archived ? (
+          <button type="button" onClick={onRestore}>Restaurar</button>
+        ) : (
+          <button
+            type="button"
+            className="danger-text"
+            onClick={() => void onArchive()}
+          >
+            Archivar
+          </button>
+        )}
+      </div>
+    </article>
+  )
+}
+
+function ArchiveToggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean
+  onChange: (value: boolean) => void
+}) {
+  return (
+    <label className="archive-toggle">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      Mostrar archivados
+    </label>
+  )
+}
+
+function Card({
+  title,
+  eyebrow,
+  action,
+  children,
+}: {
+  title: string
+  eyebrow: string
+  action?: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <div className="verification-section">
+      <div className="section-heading-row">
+        <div>
+          <span>{eyebrow}</span>
+          <h3>{title}</h3>
+        </div>
+        {action}
+      </div>
+      {children}
+    </div>
   )
 }
 
 function StatusBadge({
   status,
 }: {
-  status:
-    | 'pending'
-    | 'review'
-    | 'verified'
+  status: ApiPart['verification_status']
 }) {
   const labels = {
-    pending:
-      'Pendiente',
-
-    review:
-      'Revisar',
-
-    verified:
-      'Verificado',
+    pending: 'Pendiente',
+    review: 'Revisar',
+    verified: 'Verificado',
   }
-
   return (
-    <span
-      className={`status-badge ${status}`}
-    >
+    <span className={`status-badge ${status}`}>
       {labels[status]}
     </span>
   )
 }
 
-function ErrorBanner({
-  message,
-  onClose,
+function Messages({
+  error,
+  toast,
+  onClear,
 }: {
-  message: string
-  onClose: () => void
+  error: string | null
+  toast: string | null
+  onClear: () => void
 }) {
   return (
-    <div className="error-banner">
-      <AlertTriangle
-        size={18}
-      />
-
-      <span>
-        {message}
-      </span>
-
-      <button
-        type="button"
-        onClick={
-          onClose
-        }
-        aria-label="Cerrar error"
-      >
-        <X size={17} />
-      </button>
-    </div>
+    <>
+      {error && (
+        <div className="feedback-banner error" role="alert">
+          <AlertTriangle size={18} />
+          <span>{error}</span>
+          <button
+            type="button"
+            aria-label="Cerrar error"
+            onClick={onClear}
+          >
+            <X size={17} />
+          </button>
+        </div>
+      )}
+      {toast && (
+        <div className="feedback-banner success" role="status">
+          <CheckCircle2 size={18} />
+          <span>{toast}</span>
+        </div>
+      )}
+    </>
   )
 }
 
-function translateConfidence(
-  confidence:
-    | 'high'
-    | 'medium'
-    | 'low'
-    | null,
-) {
-  if (
-    confidence === 'high'
-  ) {
-    return 'Alta'
-  }
-
-  if (
-    confidence === 'medium'
-  ) {
-    return 'Media'
-  }
-
-  if (
-    confidence === 'low'
-  ) {
-    return 'Baja'
-  }
-
-  return 'Sin clasificar'
+function Empty({ children }: { children: ReactNode }) {
+  return (
+    <div className="empty-state">
+      <PackageSearch size={34} />
+      <p>{children}</p>
+    </div>
+  )
 }
-
-export default AdminPage

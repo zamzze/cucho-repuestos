@@ -1,16 +1,20 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useState,
 } from 'react'
 
 import {
+  AlertTriangle,
   ArrowLeft,
   Check,
   ChevronRight,
   Copy,
   PackageSearch,
+  RefreshCw,
   Search,
+  X,
 } from 'lucide-react'
 
 import {
@@ -126,13 +130,13 @@ export default function CatalogPage() {
   const [copied, setCopied] =
     useState(false)
 
-  useEffect(() => {
-    loadCatalog()
-  }, [])
+  const [error, setError] =
+    useState<string | null>(null)
 
-  async function loadCatalog() {
+  const loadCatalog = useCallback(async () => {
     try {
       setLoading(true)
+      setError(null)
 
       const [
         partData,
@@ -181,10 +185,26 @@ export default function CatalogPage() {
       setCompatibilityMap(
         new Map(entries),
       )
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : 'No se pudo cargar el catálogo.',
+      )
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    const timer =
+      window.setTimeout(() => {
+        void loadCatalog()
+      }, 0)
+
+    return () =>
+      window.clearTimeout(timer)
+  }, [loadCatalog])
 
   async function copySap(
     code: string,
@@ -297,6 +317,25 @@ export default function CatalogPage() {
     )
   }
 
+  if (error) {
+    return (
+      <main className="catalog-app">
+        <div className="catalog-error" role="alert">
+          <AlertTriangle size={34} />
+          <h2>No pudimos cargar el catálogo</h2>
+          <p>{error}</p>
+          <button
+            type="button"
+            onClick={() => void loadCatalog()}
+          >
+            <RefreshCw size={18} />
+            Reintentar
+          </button>
+        </div>
+      </main>
+    )
+  }
+
   if (view.type === 'part') {
     const part =
       parts.find(
@@ -316,7 +355,7 @@ export default function CatalogPage() {
     return (
       <main className="catalog-app">
         <CatalogHeader
-          title="Detalle del repuesto"
+          title="Detalle del componente"
           onBack={() =>
             setView({
               type: 'home',
@@ -530,6 +569,12 @@ export default function CatalogPage() {
                 </button>
               ),
             )}
+
+            {familyModels.length === 0 && (
+              <div className="catalog-empty">
+                Esta familia todavía no tiene modelos activos.
+              </div>
+            )}
           </div>
         </section>
       </main>
@@ -644,6 +689,12 @@ export default function CatalogPage() {
                 </button>
               ),
             )}
+
+            {compatibleParts.length === 0 && (
+              <div className="catalog-empty">
+                Este modelo no tiene componentes publicados.
+              </div>
+            )}
           </div>
         </section>
       </main>
@@ -657,7 +708,7 @@ export default function CatalogPage() {
           <span>MPC</span>
 
           <h1>
-            Catálogo de Repuestos
+            Catálogo de Componentes
           </h1>
         </div>
 
@@ -672,11 +723,11 @@ export default function CatalogPage() {
         </span>
 
         <h2>
-          ¿Qué repuesto necesitas?
+          ¿Qué componente necesitas?
         </h2>
 
         <p>
-          Busca por SAP, repuesto,
+          Busca por SAP, componente,
           familia, marca o modelo.
         </p>
 
@@ -685,21 +736,33 @@ export default function CatalogPage() {
 
           <input
             type="search"
+            aria-label="Buscar en el catálogo"
             value={search}
             onChange={(event) =>
               setSearch(
                 event.target.value,
               )
             }
-            placeholder="SAP, repuesto, modelo, familia..."
+            placeholder="SAP, componente, modelo, familia..."
           />
+
+          {search && (
+            <button
+              type="button"
+              className="catalog-search-clear"
+              aria-label="Limpiar búsqueda"
+              onClick={() => setSearch('')}
+            >
+              <X size={18} />
+            </button>
+          )}
         </div>
       </section>
 
       {query ? (
         <section className="catalog-section">
           <SearchGroup
-            title="Repuestos"
+            title="Componentes"
             count={
               searchParts.length
             }
@@ -852,6 +915,19 @@ export default function CatalogPage() {
               </div>
             )}
         </section>
+      ) : parts.length === 0 ? (
+        <section className="catalog-section">
+          <div className="catalog-empty catalog-empty-published">
+            <PackageSearch size={36} />
+            <strong>
+              El catálogo todavía no tiene componentes publicados.
+            </strong>
+            <span>
+              Los componentes aparecerán aquí cuando estén activos y
+              verificados.
+            </span>
+          </div>
+        </section>
       ) : (
         <section className="catalog-section">
           <span className="catalog-section-label">
@@ -903,6 +979,7 @@ export default function CatalogPage() {
                 </button>
               ),
             )}
+
           </div>
         </section>
       )}
@@ -921,6 +998,7 @@ function CatalogHeader({
     <header className="catalog-detail-header">
       <button
         type="button"
+        aria-label="Volver"
         onClick={onBack}
       >
         <ArrowLeft size={20} />
